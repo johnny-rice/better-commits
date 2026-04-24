@@ -3,10 +3,9 @@ import { execSync } from "child_process";
 import fs from "fs";
 import { homedir } from "os";
 import color from "picocolors";
-import { Output, ValiError, parse } from "valibot";
+import { InferOutput, ValiError, parse } from "valibot";
 import { Config } from "./valibot-state";
 import { V_BRANCH_ACTIONS } from "./valibot-consts";
-import { argv } from "process";
 import { flags } from "./args";
 import Configstore from "configstore";
 
@@ -16,18 +15,6 @@ export const A_FOR_ALL = `${color.dim(
   "(<space> to select, <a> to select all)",
 )}`;
 export const OPTIONAL_PROMPT = `${color.dim("(optional)")}`;
-export const REGEX_SLASH_TAG = new RegExp(/\/(\w+-\d+)/);
-export const REGEX_START_TAG = new RegExp(/^(\w+-\d+)/);
-export const REGEX_START_UND = new RegExp(/^([A-Z]+-[\[a-zA-Z\]\d]+)_/);
-export const REGEX_SLASH_UND = new RegExp(/\/([A-Z]+-[\[a-zA-Z\]\d]+)_/);
-
-// TODO: This might conflict with version from better-branch
-// - Maybe negative lookup against .
-// - Maybe check the order
-// - Maybe use order to split and check values
-export const REGEX_SLASH_NUM = new RegExp(/\/(\d+)/);
-export const REGEX_START_NUM = new RegExp(/^(\d+)/);
-
 export const COMMIT_FOOTER_OPTIONS = [
   {
     value: "closes",
@@ -48,7 +35,7 @@ export const COMMIT_FOOTER_OPTIONS = [
   { value: "custom", label: "custom", hint: "Add a custom footer" },
 ];
 export const BRANCH_ACTION_OPTIONS: {
-  value: Output<typeof V_BRANCH_ACTIONS>;
+  value: InferOutput<typeof V_BRANCH_ACTIONS>;
   label: string;
   hint?: string;
 }[] = [
@@ -62,47 +49,64 @@ export const NOOP_PROMPT_CACHE = {
   clear: () => {},
 } as unknown as Configstore;
 
+export type ConfigSource = "repository" | "global" | "none";
+
+export type LoadedSetup = {
+  config: InferOutput<typeof Config>;
+  config_source: ConfigSource;
+};
+
 /* LOAD */
 export function load_setup(
   cli_name = " better-commits ",
-): Output<typeof Config> {
+  git_args = flags.git_args,
+): LoadedSetup {
   console.clear();
   p.intro(`${color.bgCyan(color.black(cli_name))}`);
-
-  set_non_configuration_arguments();
 
   let global_config = null;
   const home_path = get_default_config_path();
   if (fs.existsSync(home_path)) {
-    p.log.step("Found global config");
     global_config = read_config_from_path(home_path);
   }
 
-  const root = get_git_root();
+  const root = get_git_root(git_args);
   const root_path = `${root}/${CONFIG_FILE_NAME}`;
   if (fs.existsSync(root_path)) {
-    p.log.step("Found repository config");
+    p.log.step("Reading from Repository Config");
     const repo_config = read_config_from_path(root_path);
-    return global_config
-      ? {
-          ...repo_config,
-          overrides: global_config.overrides.shell
-            ? global_config.overrides
-            : repo_config.overrides,
-          confirm_with_editor: global_config.confirm_with_editor,
-          cache_last_value: global_config.cache_last_value,
-        }
-      : repo_config;
+    return {
+      config: global_config
+        ? {
+            ...repo_config,
+            overrides: global_config.overrides.shell
+              ? global_config.overrides
+              : repo_config.overrides,
+            confirm_with_editor: global_config.confirm_with_editor,
+            cache_last_value: global_config.cache_last_value,
+          }
+        : repo_config,
+      config_source: "repository",
+    };
   }
 
-  if (global_config) return global_config;
+  if (global_config) {
+    p.log.step("Reading from Global Config");
+    return {
+      config: global_config,
+      config_source: "global",
+    };
+  }
 
   const default_config = parse(Config, {});
   p.log.step(
     "Config not found. Generating default .better-commit.json at $HOME",
   );
   fs.writeFileSync(home_path, JSON.stringify(default_config, null, 4));
-  return default_config;
+  return {
+    config: default_config,
+    config_source: "none",
+  };
 }
 
 function read_config_from_path(config_path: string) {
@@ -117,13 +121,19 @@ function read_config_from_path(config_path: string) {
   return validate_config(res);
 }
 
-function validate_config(config: Output<typeof Config>): Output<typeof Config> {
+function validate_config(config: unknown): InferOutput<typeof Config> {
   try {
     return parse(Config, config);
   } catch (err: any) {
     if (err instanceof ValiError) {
       const first_issue_path = err.issues[0].path ?? [];
-      const dot_path = first_issue_path.map((item) => item.key).join(".");
+      const dot_path = first_issue_path
+        .map((item: { key?: unknown }) => item.key)
+        .filter(
+          (key: unknown): key is string | number =>
+            typeof key === "string" || typeof key === "number",
+        )
+        .join(".");
       p.log.error(
         `Invalid Configuration: ${color.red(dot_path)}\n` + err.message,
       );
@@ -133,37 +143,13 @@ function validate_config(config: Output<typeof Config>): Output<typeof Config> {
 }
 /* END LOAD */
 
-export function infer_type_from_branch(types: string[]): string {
-  let branch = "";
-  try {
-    branch = execSync(`git ${flags.git_args} branch --show-current`, {
-      stdio: "pipe",
-    }).toString();
-  } catch (err) {
-    return "";
-  }
-  const found = types.find((t) => {
-    const start_dash = new RegExp(`^${t}-`);
-    const between_dash = new RegExp(`-${t}-`);
-    const before_slash = new RegExp(`${t}\/`);
-    const re = [
-      branch.match(start_dash),
-      branch.match(between_dash),
-      branch.match(before_slash),
-    ].filter((v) => v != null);
-    return re?.length;
-  });
-
-  return found ?? "";
-}
-
 /*
 rev-parse will fail in a --bare repository root
 */
-export function get_git_root(): string {
+export function get_git_root(git_args = flags.git_args): string {
   let path = ".";
   try {
-    path = execSync(`git ${flags.git_args} rev-parse --show-toplevel`)
+    path = execSync(`git ${git_args} rev-parse --show-toplevel`)
       .toString()
       .trim();
   } catch (err) {
@@ -178,6 +164,18 @@ export function get_default_config_path(): string {
   return homedir() + "/" + CONFIG_FILE_NAME;
 }
 
+export function get_package_version(): string {
+  try {
+    const package_json = JSON.parse(
+      fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version?: string };
+
+    return package_json.version ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 export function addNewLine(arr: string[], i: number) {
   return i === arr.length - 1 ? "" : "\n";
 }
@@ -189,10 +187,6 @@ export function clean_commit_title(title: string): string {
     return title_trimmed.substring(0, title_trimmed.length - 1).trim();
   }
   return title.trim();
-}
-
-function set_non_configuration_arguments() {
-  flags.git_args = `${argv[2] ?? ""} ${argv[3] ?? ""}`.trim();
 }
 
 export function get_value_from_cache(

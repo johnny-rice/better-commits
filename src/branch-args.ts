@@ -1,8 +1,8 @@
 import { parse } from "@bomb.sh/args";
 import { InferOutput } from "valibot";
-import { CommitState } from "./valibot-state";
+import { BranchState } from "./valibot-state";
 
-type CommitStateRuntime = InferOutput<typeof CommitState>;
+type BranchStateRuntime = InferOutput<typeof BranchState>;
 
 type ParsedRuntimeFlags = {
   help: boolean;
@@ -10,23 +10,16 @@ type ParsedRuntimeFlags = {
   git_args: string;
   no_interactive: boolean;
   dry_run: boolean;
-  commit_state: Partial<CommitStateRuntime>;
+  branch_state: Partial<BranchStateRuntime>;
 };
 
-export const COMMIT_OPTIONS = [
+const BRANCH_OPTIONS = [
+  "user",
   "type",
-  "scope",
-  "title",
-  "body",
-  "closes",
+  "description",
   "ticket",
-  "trailer",
-  "deprecates",
-  "breaking-title",
-  "breaking-body",
-  "deprecates-title",
-  "deprecates-body",
-  "custom-footer",
+  "branch-version",
+  "checkout",
 ] as const;
 
 export const GIT_OPTIONS = ["git-dir", "work-tree"] as const;
@@ -38,15 +31,11 @@ export const BOOLEAN_FLAGS = [
   "version",
 ] as const;
 
-class Flags {
+class BranchFlags {
   #runtime: ParsedRuntimeFlags;
 
   constructor(runtime: ParsedRuntimeFlags) {
     this.#runtime = runtime;
-  }
-
-  get git_args(): string {
-    return this.#runtime.git_args;
   }
 
   get interactive(): boolean {
@@ -65,26 +54,37 @@ class Flags {
     return this.#runtime.version;
   }
 
-  get commit_state(): Partial<CommitStateRuntime> {
-    return this.#runtime.commit_state;
+  get git_args(): string {
+    return this.#runtime.git_args;
+  }
+
+  get branch_state(): Partial<BranchStateRuntime> {
+    return this.#runtime.branch_state;
   }
 }
 
-export const flags = new Flags(parse_runtime_flags(process.argv.slice(2)));
+export const branch_flags = new BranchFlags(
+  parse_branch_runtime_flags(process.argv.slice(2)),
+);
 
-export function parse_runtime_flags(argv: string[]): ParsedRuntimeFlags {
+export function parse_branch_runtime_flags(argv: string[]): ParsedRuntimeFlags {
   const parsed = parse(argv, {
     alias: { h: "help", v: "version" },
     boolean: BOOLEAN_FLAGS,
-    string: [...COMMIT_OPTIONS, ...GIT_OPTIONS],
+    string: [...BRANCH_OPTIONS, ...GIT_OPTIONS],
   });
 
-  const commit_state: Partial<CommitStateRuntime> = {};
-  COMMIT_OPTIONS.forEach((value) => {
+  const branch_state: Partial<BranchStateRuntime> = {};
+  BRANCH_OPTIONS.forEach((value) => {
     const cli_value = parsed[value];
     if (cli_value) {
-      const str = value.replace("-", "_") as keyof CommitStateRuntime;
-      commit_state[str] = cli_value;
+      const str = (value === "branch-version"
+        ? "version"
+        : value.replace("-", "_")) as keyof BranchStateRuntime;
+      if (str === "checkout")
+        branch_state[str] =
+          (cli_value as "worktree" | "branch" | undefined) ?? "branch";
+      else branch_state[str] = cli_value;
     }
   });
 
@@ -92,9 +92,9 @@ export function parse_runtime_flags(argv: string[]): ParsedRuntimeFlags {
     help: parsed["help"] === true,
     version: parsed["version"] === true,
     git_args: get_git_args(parsed["git-dir"], parsed["work-tree"]),
-    no_interactive: parsed.interactive === false,
+    no_interactive: parsed["interactive"] === false,
     dry_run: parsed["dry-run"] === true,
-    commit_state,
+    branch_state: branch_state,
   };
 }
 

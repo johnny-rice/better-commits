@@ -1,11 +1,11 @@
 import { InferOutput } from "valibot";
-import { CommitState, Config } from "../valibot-state";
+import { BranchState, Config } from "../valibot-state";
 import Configstore from "configstore";
 
-export abstract class Runnable {
+export abstract class BranchRunnable {
   constructor(
     protected config: InferOutput<typeof Config>,
-    protected commit_state: InferOutput<typeof CommitState>,
+    protected branch_state: InferOutput<typeof BranchState>,
     protected prompt_cache: Configstore,
   ) {}
 

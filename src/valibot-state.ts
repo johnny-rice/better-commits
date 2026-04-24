@@ -10,113 +10,114 @@ import {
   V_FOOTER_OPTIONS,
 } from "./valibot-consts";
 
+const CommitTypeConfig = v.pipe(
+  v.optional(
+    v.object({
+      enable: v.optional(v.boolean(), true),
+      initial_value: v.optional(v.string(), "feat"),
+      max_items: v.optional(v.pipe(v.number(), v.minValue(1)), 20),
+      infer_type_from_branch: v.optional(v.boolean(), true),
+      append_emoji_to_label: v.optional(v.boolean(), false),
+      append_emoji_to_commit: v.optional(v.boolean(), false),
+      emoji_commit_position: v.optional(
+        v.picklist(["Start", "After-Colon"]),
+        "Start",
+      ),
+      options: v.optional(
+        v.array(
+          v.object({
+            value: v.string(),
+            label: v.optional(v.string()),
+            hint: v.optional(v.string()),
+            emoji: v.optional(v.pipe(v.string(), v.emoji())),
+            trailer: v.optional(v.string()),
+          }),
+        ),
+        DEFAULT_TYPE_OPTIONS,
+      ),
+    }),
+    {},
+  ),
+  v.rawCheck(({ dataset, addIssue }) => {
+    if (
+      dataset.typed &&
+      !dataset.value.options.some(
+        (option) => option.value === dataset.value.initial_value,
+      )
+    ) {
+      addIssue({
+        message: `Type: initial_value "${dataset.value.initial_value}" must exist in options`,
+      });
+    }
+  }),
+  v.transform((value) => ({
+    ...value,
+    options: value.options.map((option) => ({
+      ...option,
+      label:
+        option.emoji && value.append_emoji_to_label
+          ? `${option.emoji} ${option.label}`
+          : option.label,
+    })),
+  })),
+);
+
+const CommitScopeConfig = v.pipe(
+  v.optional(
+    v.object({
+      enable: v.optional(v.boolean(), true),
+      custom_scope: v.optional(v.boolean(), false),
+      max_items: v.optional(v.pipe(v.number(), v.minValue(1)), 20),
+      initial_value: v.optional(v.string(), "app"),
+      options: v.optional(
+        v.array(
+          v.object({
+            value: v.string(),
+            label: v.optional(v.string()),
+            hint: v.optional(v.string()),
+          }),
+        ),
+        DEFAULT_SCOPE_OPTIONS,
+      ),
+    }),
+    {},
+  ),
+  v.rawCheck(({ dataset, addIssue }) => {
+    if (!dataset.typed) return;
+
+    const option_values = dataset.value.options.map((option) => option.value);
+    if (dataset.value.custom_scope) option_values.push(CUSTOM_SCOPE_KEY);
+
+    if (!option_values.includes(dataset.value.initial_value)) {
+      addIssue({
+        message: `Scope: initial_value "${dataset.value.initial_value}" must exist in options`,
+      });
+    }
+  }),
+  v.transform((value) => {
+    const option_values = value.options.map((option) => option.value);
+    if (value.custom_scope && !option_values.includes(CUSTOM_SCOPE_KEY)) {
+      return {
+        ...value,
+        options: [
+          ...value.options,
+          {
+            label: CUSTOM_SCOPE_KEY,
+            value: CUSTOM_SCOPE_KEY,
+            hint: "Write a custom scope",
+          },
+        ],
+      };
+    }
+
+    return value;
+  }),
+);
+
 export const Config = v.object({
   check_status: v.optional(v.boolean(), true),
-  commit_type: v.transform(
-    v.optional(
-      v.object(
-        {
-          enable: v.optional(v.boolean(), true),
-          initial_value: v.optional(v.string(), "feat"),
-          max_items: v.optional(v.number([v.minValue(1)]), 20),
-          infer_type_from_branch: v.optional(v.boolean(), true),
-          append_emoji_to_label: v.optional(v.boolean(), false),
-          append_emoji_to_commit: v.optional(v.boolean(), false),
-          emoji_commit_position: v.optional(
-            v.picklist(["Start", "After-Colon"]),
-            "Start",
-          ),
-          options: v.optional(
-            v.array(
-              v.object({
-                value: v.string(),
-                label: v.optional(v.string()),
-                hint: v.optional(v.string()),
-                emoji: v.optional(v.string([v.emoji()]), undefined),
-                trailer: v.optional(v.string()),
-              }),
-            ),
-            DEFAULT_TYPE_OPTIONS,
-          ),
-        },
-        [
-          v.custom(
-            (val) =>
-              val.options.map((v) => v.value).includes(val.initial_value),
-            (val) => {
-              const input = val.input as { initial_value: string };
-              return `Type: initial_value "${input.initial_value}" must exist in options`;
-            },
-          ),
-        ],
-      ),
-      {},
-    ),
-    (val) => {
-      const options =
-        val.options.map((v) => ({
-          ...v,
-          label:
-            v.emoji && val.append_emoji_to_label
-              ? `${v.emoji} ${v.label}`
-              : v.label,
-        })) ?? [];
-      return { ...val, options };
-    },
-  ),
-  commit_scope: v.transform(
-    v.optional(
-      v.object(
-        {
-          enable: v.optional(v.boolean(), true),
-          custom_scope: v.optional(v.boolean(), false),
-          max_items: v.optional(v.number([v.minValue(1)]), 20),
-          initial_value: v.optional(v.string(), "app"),
-          options: v.optional(
-            v.array(
-              v.object({
-                value: v.string(),
-                label: v.optional(v.string()),
-                hint: v.optional(v.string()),
-              }),
-            ),
-            DEFAULT_SCOPE_OPTIONS,
-          ),
-        },
-        [
-          v.custom(
-            (val) => {
-              const options = val.options.map((v) => v.value);
-              if (val.custom_scope) options.push(CUSTOM_SCOPE_KEY);
-              return options.includes(val.initial_value);
-            },
-            (val) => {
-              const input = val.input as { initial_value: string };
-              return `Scope: initial_value "${input.initial_value}" must exist in options`;
-            },
-          ),
-        ],
-      ),
-      {},
-    ),
-    (val) => {
-      const options = val.options.map((v) => v.value);
-      if (val.custom_scope && !options.includes(CUSTOM_SCOPE_KEY)) {
-        return {
-          ...val,
-          options: [
-            ...val.options,
-            {
-              label: CUSTOM_SCOPE_KEY,
-              value: CUSTOM_SCOPE_KEY,
-              hint: "Write a custom scope",
-            },
-          ],
-        };
-      }
-      return val;
-    },
-  ),
+  commit_type: CommitTypeConfig,
+  commit_scope: CommitScopeConfig,
   check_ticket: v.optional(
     v.object({
       infer_ticket: v.optional(v.boolean(), true),
@@ -137,7 +138,7 @@ export const Config = v.object({
   ),
   commit_title: v.optional(
     v.object({
-      max_size: v.optional(v.number([v.minValue(1)]), 70),
+      max_size: v.optional(v.pipe(v.number(), v.minValue(1)), 70),
     }),
     {},
   ),
@@ -204,7 +205,7 @@ export const Config = v.object({
   ),
   branch_description: v.optional(
     v.object({
-      max_length: v.optional(v.number([v.minValue(1)]), 70),
+      max_length: v.optional(v.pipe(v.number(), v.minValue(1)), 70),
       separator: v.optional(v.picklist(["", "/", "-", "_"]), ""),
     }),
     {},
@@ -231,32 +232,34 @@ export const Config = v.object({
   ),
 });
 
-export const CommitState = v.optional(
-  v.object({
-    type: v.optional(v.string(), ""),
-    scope: v.optional(v.string(), ""),
-    title: v.optional(v.string(), ""),
-    body: v.optional(v.string(), ""),
-    closes: v.optional(v.string(), ""),
-    ticket: v.optional(v.string(), ""),
-    breaking_title: v.optional(v.string(), ""),
-    breaking_body: v.optional(v.string(), ""),
-    deprecates: v.optional(v.string(), ""),
-    deprecates_title: v.optional(v.string(), ""),
-    deprecates_body: v.optional(v.string(), ""),
-    custom_footer: v.optional(v.string(), ""),
-    trailer: v.optional(v.string(), ""),
-  }),
-  {},
-);
+export const COMMIT_STATE_ENTRIES = {
+  type: v.optional(v.string(), ""),
+  scope: v.optional(v.string(), ""),
+  title: v.optional(v.string(), ""),
+  body: v.optional(v.string(), ""),
+  closes: v.optional(v.string(), ""),
+  ticket: v.optional(v.string(), ""),
+  breaking_title: v.optional(v.string(), ""),
+  breaking_body: v.optional(v.string(), ""),
+  deprecates: v.optional(v.string(), ""),
+  deprecates_title: v.optional(v.string(), ""),
+  deprecates_body: v.optional(v.string(), ""),
+  custom_footer: v.optional(v.string(), ""),
+  trailer: v.optional(v.string(), ""),
+};
+
+export const CommitState = v.optional(v.object(COMMIT_STATE_ENTRIES), {});
+
+export const BRANCH_STATE_ENTRIES = {
+  user: v.optional(v.string(), ""),
+  type: v.optional(v.string(), ""),
+  ticket: v.optional(v.string(), ""),
+  description: v.optional(v.string(), ""),
+  version: v.optional(v.string(), ""),
+  checkout: v.optional(V_BRANCH_ACTIONS, "branch"),
+};
 
 export const BranchState = v.optional(
-  v.object({
-    user: v.optional(v.string(), ""),
-    type: v.optional(v.string(), ""),
-    ticket: v.optional(v.string(), ""),
-    description: v.optional(v.string(), ""),
-    version: v.optional(v.string(), ""),
-  }),
+  v.object(BRANCH_STATE_ENTRIES),
   {},
 );

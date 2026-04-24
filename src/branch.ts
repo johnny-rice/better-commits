@@ -1,258 +1,92 @@
 #! /usr/bin/env node
 
-import * as p from "@clack/prompts";
-import { execSync } from "child_process";
 import Configstore from "configstore";
-import color from "picocolors";
 import { chdir } from "process";
-import { Output, parse } from "valibot";
-import {
-  V_BRANCH_ACTIONS,
-  V_BRANCH_CONFIG_FIELDS,
-  V_BRANCH_FIELDS,
-} from "./valibot-consts";
+import { InferOutput, ValiError, parse } from "valibot";
 import { BranchState, CommitState, Config } from "./valibot-state";
-import { BRANCH_ACTION_OPTIONS, load_setup, get_git_root } from "./utils";
-import { optional_message } from "./utils/messages";
-import { flags } from "./args";
+import {
+  load_setup,
+  get_git_root,
+  NOOP_PROMPT_CACHE,
+  ConfigSource,
+} from "./utils";
+import { BranchRunnable } from "./prompts/branch-runnable";
+import { BranchCheckoutPrompt } from "./prompts/branch-checkout.prompt";
+import { BranchUserPrompt } from "./prompts/branch-user.prompt";
+import { BranchTypePrompt } from "./prompts/branch-type.prompt";
+import { BranchTicketPrompt } from "./prompts/branch-ticket.prompt";
+import { BranchVersionPrompt } from "./prompts/branch-version.prompt";
+import { BranchDescriptionPrompt } from "./prompts/branch-description.prompt";
+import { BranchConfirmPrompt } from "./prompts/branch-confirm.prompt";
+import { branch_flags } from "./branch-args";
+import { print_help_text } from "./branch-help";
+import { create_strict_branch_state } from "./utils/no-interactive-validation";
+import { get_package_version } from "./utils";
+import * as p from "@clack/prompts";
 
-main(load_setup(" better-branch "));
+type PromptCtor = new (
+  config: InferOutput<typeof Config>,
+  commit_state: InferOutput<typeof BranchState>,
+  prompt_cache: Configstore,
+) => BranchRunnable;
 
-async function main(config: Output<typeof Config>) {
-  const branch_state = parse(BranchState, {});
-  chdir(get_git_root());
+const promptCtors: PromptCtor[] = [
+  BranchCheckoutPrompt,
+  BranchUserPrompt,
+  BranchTypePrompt,
+  BranchTicketPrompt,
+  BranchVersionPrompt,
+  BranchDescriptionPrompt,
+  BranchConfirmPrompt,
+];
 
-  let checkout_type: Output<typeof V_BRANCH_ACTIONS> = "branch";
-  if (config.worktrees.enable) {
-    const branch_or_worktree = await p.select({
-      message: `Checkout a branch or create a worktree?`,
-      initialValue: config.branch_action_default,
-      options: BRANCH_ACTION_OPTIONS,
-    });
+const { config, config_source } = load_setup(
+  " better-branch ",
+  branch_flags.git_args,
+);
 
-    if (p.isCancel(branch_or_worktree)) process.exit();
-    checkout_type = branch_or_worktree;
-  }
+main(config, config_source);
 
-  if (config.branch_user.enable) {
-    const cache_user_name = get_user_from_cache();
-    const user_name_required = config.branch_user.required;
-    const user_name = await p.text({
-      message: user_name_required
-        ? "Type your git username"
-        : optional_message("Type your git username"),
-      placeholder: "",
-      initialValue: cache_user_name,
-      validate: (val) => {
-        if (user_name_required && !val) return "Please enter a username";
-      },
-    });
-    if (p.isCancel(user_name)) process.exit(0);
-    branch_state.user = user_name?.replace(/\s+/g, "-")?.toLowerCase() ?? "";
-    set_user_cache(branch_state.user);
-  }
-
-  if (config.branch_type.enable) {
-    let initial_value = config.commit_type.initial_value;
-    const commit_type = await p.select({
-      message: `Select a branch type`,
-      initialValue: initial_value,
-      options: config.commit_type.options,
-    });
-    if (p.isCancel(commit_type)) process.exit(0);
-    branch_state.type = commit_type;
-  }
-
-  if (config.branch_ticket.enable) {
-    const ticked_required = config.branch_ticket.required;
-    const ticket = await p.text({
-      message: ticked_required
-        ? "Type ticket / issue number"
-        : optional_message("Type ticket / issue number"),
-      placeholder: "",
-      validate: (val) => {
-        if (ticked_required && !val) return "Please enter a ticket / issue";
-      },
-    });
-    if (p.isCancel(ticket)) process.exit(0);
-    branch_state.ticket = ticket;
-  }
-
-  if (config.branch_version.enable) {
-    const version_required = config.branch_version.required;
-    const version = await p.text({
-      message: version_required
-        ? "Type version number"
-        : optional_message("Type version number"),
-      placeholder: "",
-      validate: (val) => {
-        if (version_required && !val) return "Please enter a version";
-      },
-    });
-    if (p.isCancel(version)) process.exit(0);
-    branch_state.version = version;
-  }
-
-  const description_max_length = config.branch_description.max_length;
-  const description = await p.text({
-    message: "Type a short description",
-    placeholder: "",
-    validate: (value) => {
-      if (!value) return "Please enter a description";
-      if (value.length > description_max_length)
-        return `Exceeded max length. Description max [${description_max_length}]`;
-    },
-  });
-  if (p.isCancel(description)) process.exit(0);
-  branch_state.description =
-    description?.replace(/\s+/g, "-")?.toLowerCase() ?? "";
-
-  const pre_commands =
-    checkout_type === "worktree"
-      ? config.worktree_pre_commands
-      : config.branch_pre_commands;
-  pre_commands.forEach((command) => {
-    try {
-      execSync(command, { stdio: "inherit" });
-    } catch (err) {
-      p.log.error("Something went wrong when executing pre-commands: " + err);
-      process.exit(0);
-    }
-  });
-
-  const branch_name = build_branch(branch_state, config);
-  const branch_flag = verify_branch_name(branch_name);
-  if (checkout_type === "branch") {
-    try {
-      execSync(`git ${flags.git_args} checkout ${branch_flag} ${branch_name}`, {
-        stdio: "inherit",
-      });
-      p.log.info(
-        `Switched to a new branch '${color.bgGreen(
-          " " + color.black(branch_name) + " ",
-        )}'`,
-      );
-    } catch (err) {
-      process.exit(0);
-    }
-  } else {
-    try {
-      const worktree_name = build_worktree_path(branch_state, config);
-      execSync(
-        `git worktree add ${worktree_name} ${branch_flag} ${branch_name}`,
-        {
-          stdio: "inherit",
-        },
-      );
-      p.log.info(
-        `Created a new worktree ${color.bgGreen(
-          +" " + color.black(worktree_name) + " ",
-        )}, checked out branch ${color.bgGreen(
-          " " + color.black(branch_name) + " ",
-        )}`,
-      );
-      p.log.info(
-        color.bgMagenta(color.black(` cd ${worktree_name} `)) +
-          " to navigate to your new worktree",
-      );
-      chdir(worktree_name);
-    } catch (err) {
-      process.exit(0);
-    }
-  }
-
-  const post_commands =
-    checkout_type === "worktree"
-      ? config.worktree_post_commands
-      : config.branch_post_commands;
-  post_commands.forEach((command) => {
-    try {
-      execSync(command, { stdio: "inherit" });
-    } catch (err) {
-      p.log.error("Something went wrong when executing post-commands: " + err);
-      process.exit(0);
-    }
-  });
-}
-
-function build_branch(
-  branch: Output<typeof BranchState>,
-  config: Output<typeof Config>,
+async function main(
+  config: InferOutput<typeof Config>,
+  config_source: ConfigSource,
 ) {
-  let res = "";
-  config.branch_order.forEach((b: Output<typeof V_BRANCH_FIELDS>) => {
-    const config_key: Output<typeof V_BRANCH_CONFIG_FIELDS> = `branch_${b}`;
-    if (branch[b]) res += branch[b] + config[config_key].separator;
-  });
-  if (res.endsWith("-") || res.endsWith("/") || res.endsWith("_")) {
-    return res.slice(0, -1).trim();
-  }
-  return res.trim();
-}
+  chdir(get_git_root(branch_flags.git_args));
 
-function build_worktree_path(
-  branch_state: Output<typeof BranchState>,
-  config: Output<typeof Config>,
-): string {
-  const gitRoot = get_git_root();
-  const repo_name = gitRoot.split("/").pop() || "repo";
-
-  let worktree_name = config.worktrees.folder_template;
-
-  worktree_name = worktree_name
-    .replace("{{repo_name}}", repo_name)
-    .replace("{{branch_description}}", branch_state.description)
-    .replace("{{user}}", branch_state.user || "")
-    .replace("{{type}}", branch_state.type || "")
-    .replace("{{ticket}}", branch_state.ticket || "")
-    .replace("{{version}}", branch_state.version || "");
-
-  worktree_name = worktree_name
-    .replace(/\s/g, "")
-    .replace(/--+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-  const base_path = config.worktrees.base_path;
-  return `${base_path}${base_path.endsWith("/") ? "" : "/"}${worktree_name}`;
-}
-
-function get_user_from_cache(): string {
-  try {
-    const config_store = new Configstore("better-commits");
-    return config_store.get("username") ?? "";
-  } catch (err) {
-    p.log.warn(
-      'There was an issue accessing username from cache. Check that the folder "~/.config" exists',
-    );
+  if (branch_flags.version) {
+    const version = get_package_version();
+    p.log.step("Better Commits v" + version);
+    return;
   }
 
-  return "";
-}
-
-function verify_branch_name(branch_name: string): string {
-  // TODO: There has to be a better way 🤦
-  let branch_flag = "";
-  try {
-    execSync(`git show-ref ${branch_name}`, { encoding: "utf-8" });
-    p.log.warning(
-      color.yellow(
-        `${branch_name} already exists! Checking out existing branch.`,
-      ),
-    );
-  } catch (err) {
-    // Branch does not exist
-    branch_flag = "-b";
+  if (branch_flags.help) {
+    print_help_text(config, config_source);
+    return;
   }
 
-  return branch_flag;
-}
+  const branch_state = parse(BranchState, branch_flags.branch_state);
 
-function set_user_cache(val: string): void {
-  try {
-    const config_store = new Configstore("better-commits");
-    config_store.set("username", val);
-  } catch (err) {
-    // fail silently, user has likely already seen guidance via get exceptions at this point
+  if (!branch_flags.interactive) {
+    try {
+      parse(create_strict_branch_state(config), branch_state);
+    } catch (err) {
+      if (err instanceof ValiError) {
+        p.log.error(`Invalid branch input: ${err.message}`);
+      } else {
+        p.log.error(`Failed to validate branch input: ${err}`);
+      }
+      process.exit(0);
+    }
+  }
+
+  const prompt_cache = config.cache_last_value
+    ? new Configstore("better-commits")
+    : NOOP_PROMPT_CACHE;
+  const prompts_to_run = branch_flags.interactive
+    ? promptCtors
+    : [BranchConfirmPrompt];
+  for (const Prompt of prompts_to_run) {
+    await new Prompt(config, branch_state, prompt_cache).run();
   }
 }
 
