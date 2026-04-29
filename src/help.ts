@@ -2,31 +2,34 @@ import { execSync } from "child_process";
 import { InferOutput } from "valibot";
 import { flags } from "./args";
 import { get_package_version } from "./utils";
-import { infer_ticket_from_git, infer_type_from_git } from "./utils/infer";
+import {
+  infer_scope_from_git,
+  infer_ticket_from_git,
+  infer_type_from_git,
+} from "./utils/infer";
 import { Config } from "./valibot-state";
 import color from "picocolors";
 
 const ADDITIONAL_COMMAND_DEFINITIONS: Record<string, string> = {
   "better-branch": "Create a branch or worktree from a guided prompt flow.",
   "better-commits-init":
-    "Create a .better-commits.json config in this repository.",
+    "Create a .better-commits.jsonc config in this repository.",
 };
 
 const CLI_FLAG_DEFINITIONS: Record<string, string> = {
-  "--interactive": "Run in interactive prompt mode (default behavior).",
+  "--no-interactive": "Run without tui prompts.",
   "--dry-run": "Print the commit command without creating a commit.",
   "--help": "Show help information and exit.",
 };
 
 const COMMIT_FLAG_DEFINITIONS: Record<string, string> = {
-  "--type": "Set commit type (for example feat, fix, docs).",
-  "--scope": "Set commit scope.",
+  "--type": "Set commit type (can be inferred from branch).",
+  "--scope": "Set commit scope (can be inferred from branch).",
   "--title": "Set commit title/description.",
   "--body": "Set commit body text.",
-  "--closes": "Set issue/ticket id for a closes footer.",
-  "--ticket": "Set ticket value used in the title.",
+  "--ticket": "Set ticket / issue (can be inferred from branch).",
+  "--closes": "Set closes footer (true/false).",
   "--trailer": "Set trailer footer value.",
-  "--deprecates": "Set issue/ticket id for a deprecates footer.",
   "--breaking-title": "Set breaking-change title footer.",
   "--breaking-body": "Set breaking-change body footer.",
   "--deprecates-title": "Set deprecates footer title text.",
@@ -83,6 +86,10 @@ export function print_help_text(
         flags.git_args,
       ) || "Unknown"
     : "Infer Disabled";
+  const inferred_scope = config.commit_scope.infer_scope_from_branch
+    ? infer_scope_from_git(config.commit_scope.options, flags.git_args) ||
+      "Unknown"
+    : "Infer Disabled";
 
   const types = config.commit_type.options
     .map((option) => option.value)
@@ -104,7 +111,7 @@ ${color.green(" better-commits")} ${color.gray("v" + version)}
 
 ${color.gray("BRANCH")} 
  ${branch}
- ${color.gray("Type")} ${color.blue(inferred_type)} ${color.gray("·")} ${color.gray("Ticket")} ${color.magenta(inferred_ticket)}
+ ${color.gray("Type")} ${color.blue(inferred_type)} ${color.gray("·")} ${color.gray("Scope")} ${color.cyan(inferred_scope)} ${color.gray("·")} ${color.gray("Ticket")} ${color.magenta(inferred_ticket)}
 
 ${color.gray("CONFIGURATION")} 
  ${config_source}
